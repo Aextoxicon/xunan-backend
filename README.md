@@ -29,6 +29,7 @@ prisma/schema.prisma         数据库结构唯一真源
 prisma/constraints.sql        值域与完整性 CHECK 约束
 prisma/migrate-timestamptz.sql  一次性迁移：把旧的时间列从 timestamp 改成 timestamptz
 prisma/migrate-features.sql   一次性迁移：房间定位/周期/检查项配置与催办计数
+prisma/migrate-jwt-auth.sql   一次性迁移：users 增加 password_hash 列
 wrangler.jsonc               Workers 部署配置（入口、nodejs_compat、Hyperdrive）
 ```
 
@@ -42,6 +43,8 @@ wrangler.jsonc               Workers 部署配置（入口、nodejs_compat、Hyp
 | `AWS_ENDPOINT_URL_S3` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | AWS 标准 S3 环境变量，由 Neon 注入；缺任一变量时 `/uploads/presign` 返回 503 `storage_not_configured` |
 | `STORAGE_BUCKET` | bucket 名，默认 `uploads` |
 | `CORS_ORIGINS` | 允许的跨域来源，逗号分隔，如 `http://localhost:5173,https://app.example.com`；填 `*` 放行全部；留空则不下发 CORS 头 |
+| `JWT_SECRET` | 登录 token 的 HMAC 签名密钥，缺失时鉴权接口返回 503 `auth_not_configured` |
+| `JWT_TTL_DAYS` | token 有效期天数，默认 30；离线补传建议保持长有效期 |
 | `PORT` | 本地 `serve()` 的监听端口，默认 3000；Workers 没有监听端口，不需要 |
 
 ## 运行
@@ -83,7 +86,7 @@ Prisma 不支持 CHECK 约束，也不会检测它们，因此结构与约束分
 
 ```bash
 npm run db:setup        # 建表 + 执行约束（走 prisma/ddl.sql 与 pg 驱动，不依赖 Prisma 引擎联网）
-npm run db:seed         # 演示种子数据：12 个实训室、3 个用户、3 次巡检、3 条隐患（含 1 条逾期），会先清空表
+npm run db:seed         # 演示种子数据：12 个实训室、3 个用户、8 次巡检、10 条隐患（含 3 条逾期、2 条带催办），会先清空表
 npm run db:push         # 用 Prisma 引擎推结构（能直连数据库时用）
 npm run db:constraints  # 只执行 prisma/constraints.sql（幂等，可重复跑）
 # 旧库升级：psql 或以 pg 执行 prisma/migrate-features.sql 与 prisma/migrate-timestamptz.sql
@@ -101,6 +104,8 @@ npm run db:constraints  # 只执行 prisma/constraints.sql（幂等，可重复�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| POST | `/auth/login` | 账号密码登录，签发 JWT（唯一免鉴权接口） |
+| GET | `/auth/me` | 当前登录用户 |
 | POST | `/inspections` | 提交巡检，含明细与得分计算 |
 | POST | `/hazards` | 新增隐患 |
 | PATCH | `/hazards/{id}/status` | 修改整改状态，四态单向流转 |
@@ -115,18 +120,23 @@ npm run db:constraints  # 只执行 prisma/constraints.sql（幂等，可重复�
 | GET | `/rooms` | 实训室列表，含坐标、半径、巡检周期、今日是否已巡检、周期是否到期 |
 | GET | `/check-items?room_id=` | 检查项，按房间 `check_item_codes` 过滤，未配置时返回全量 |
 | POST | `/uploads/presign` | 对象存储预签名上传地址，300 秒有效 |
+| GET | `/uploads/presign?key=` | 对象存储预签名下载地址，300 秒有效 |
+| PATCH | `/hazards/{id}` | 编辑隐患描述/级别/责任人/期限，记入时间轴且幂等 |
 
 ## 约定
 
+- 除 `POST /api/v1/auth/login` 外，所有接口要求 `Authorization: Bearer <JWT>`；token 默认 30 天。
 - 主键一律字符串形式十进制，入参同样按字符串校验。
 - 所有写操作带 `client_uuid`，重复提交返回 200 与首次创建的资源并附 `duplicated: true`；同一 `client_uuid` 用于不同目标状态返回 409 `idempotency_key_conflict`。
 - 响应统一 `{ ok: true, data }` / `{ ok: false, error: { code, message, issues } }`。
 - 编号格式 `XJ-YYYYMMDD-NNNN` / `HZ-YYYYMMDD-NNNN`，按 Asia/Shanghai 日期，序号由 advisory lock 保证唯一。
+- 对象 key 为桶内相对路径，不含桶名，`seed-fire-01.jpg` 这类 key 可直接用于下载签名。
 - 时间统一返回 `+08:00` 偏移（`2026-11-26T21:30:00.000+08:00`），入参接受 `Z` 与 `+08:00`，库内以 `timestamptz` 存瞬时值。
 
 ## 已知限制
 
-- 没有鉴权，应用层 API Key 也未做，公网部署前必须补。
+- JWT 无状态，签发后不能单条撤销；需要强制下线只能换 `JWT_SECRET`（全员失效）或缩短 TTL。
+- 登录没有限流与验证码；演示口令 `xunan2026` 写在种子脚本里，上线前必须改。
 - 没有速率限制。跨域由 `CORS_ORIGINS` 控制。
 - `users` 没有唯一键，只用于指派与操作人记录，暂不建认证表。
 - 检查项是服务端静态配置，不建 `check_items` 表。

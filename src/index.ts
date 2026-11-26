@@ -12,6 +12,8 @@ import catalog from "./routes/catalog.js";
 import stats from "./routes/stats.js";
 import reports from "./routes/reports.js";
 import uploads from "./routes/uploads.js";
+import auth from "./routes/auth.js";
+import { authGuard } from "./lib/auth.js";
 
 const app = new Hono<AppEnv>();
 const api = new Hono<AppEnv>();
@@ -37,7 +39,12 @@ app.use("*", async (c, next) => {
     return failJson(c, 500, "internal_error");
   }
   const db = new Client({ connectionString: url });
-  await db.connect();
+  try {
+    await db.connect();
+  } catch (err) {
+    console.error(err);
+    return failJson(c, 503, "database_unavailable");
+  }
   c.set("db", db);
   try {
     await next();
@@ -62,6 +69,8 @@ app.onError((err, c) => {
 
 app.get("/health", (c) => okJson(c, { status: "ok", time: toCst(new Date()) }));
 
+api.use("*", authGuard());
+api.route("/", auth);
 api.route("/", inspections);
 api.route("/", hazards);
 api.route("/", catalog);

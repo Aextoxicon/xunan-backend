@@ -1,5 +1,5 @@
--- 一次性迁移：把已有的 timestamp without time zone 列改为 timestamptz(3)
--- 旧库里的墙钟值本来是按 UTC 写入的，所以用 AT TIME ZONE 'UTC' 解释后转成瞬时值
+-- 一次性迁移：把已有的timestamp without time zone列改为timestamptz(3)
+-- 旧库里的墙钟值本来是按UTC写入的，所以用AT TIME ZONE 'UTC'解释后转成瞬时值
 -- 可重复执行：只处理仍为 timestamp without time zone 的列
 
 DO $$

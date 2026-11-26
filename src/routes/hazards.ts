@@ -32,6 +32,25 @@ const statusSchema = z.object({
   note: z.string().max(500).optional(),
 });
 
+const hazardUpdateSchema = z
+  .object({
+    client_uuid: clientUuid,
+    operator_id: positiveId,
+    description: z.string().min(1).max(2000).optional(),
+    level: levelField.optional(),
+    assignee_id: positiveId.optional(),
+    due_at: dateField.optional(),
+    note: z.string().max(500).optional(),
+  })
+  .refine(
+    (body) =>
+      body.description !== undefined ||
+      body.level !== undefined ||
+      body.assignee_id !== undefined ||
+      body.due_at !== undefined,
+    { path: [], message: "至少提供一个要修改的字段" },
+  );
+
 const remindSchema = z.object({
   client_uuid: clientUuid,
   operator_id: positiveId,
@@ -198,6 +217,108 @@ hazards.get("/hazards", async (c) => {
     offset: query.offset,
   });
 });
+
+hazards.patch(
+  "/hazards/:id",
+  zValidator("json", hazardUpdateSchema, (result) => {
+    if (!result.success) throw new ApiError(400, "validation_error", result.error.issues);
+  }),
+  async (c) => {
+    const id = c.req.param("id");
+    if (!positiveId.safeParse(id).success) {
+      throw new ApiError(400, "invalid_id");
+    }
+    const body = c.req.valid("json");
+    const data = await withTransaction(c, async (client) => {
+      const { rows } = await client.query(
+        `SELECT id, hazard_no, status, description, level, assignee_id, due_at, closed_at,
+           status_history, updated_at
+         FROM hazards WHERE id = $1 FOR UPDATE`,
+        [id],
+      );
+      const hazard = rows[0];
+      if (!hazard) {
+        throw new ApiError(404, "not_found");
+      }
+      const history: StatusHistoryEntry[] = Array.isArray(hazard.status_history)
+        ? (hazard.status_history as StatusHistoryEntry[])
+        : [];
+      const replay = history.find(
+        (entry) => entry?.client_uuid === body.client_uuid && entry?.action === "edit",
+      );
+      const current = {
+        id: hazard.id,
+        hazard_no: hazard.hazard_no,
+        description: hazard.description,
+        level: hazard.level,
+        assignee_id: hazard.assignee_id,
+        due_at: toCst(hazard.due_at),
+        status: hazard.status,
+        updated_at: toCst(hazard.updated_at),
+      };
+      const changes: Record<string, unknown> = {};
+      if (body.description !== undefined) changes.description = body.description;
+      if (body.level !== undefined) changes.level = body.level;
+      if (body.assignee_id !== undefined) changes.assignee_id = body.assignee_id;
+      if (body.due_at !== undefined) changes.due_at = body.due_at;
+      if (replay) {
+        if (JSON.stringify(replay.changes ?? {}) !== JSON.stringify(changes)) {
+          throw new ApiError(409, "idempotency_key_conflict");
+        }
+        return { ...current, duplicated: true };
+      }
+      if (hazard.status === "已闭环") {
+        throw new ApiError(409, "invalid_status_transition");
+      }
+      const { rows: clock } = await client.query(`SELECT now() AS at`);
+      const at = clock[0].at as Date;
+      const atCst = toCst(at) as string;
+      const { rows: updated } = await client.query(
+        `UPDATE hazards
+         SET description = COALESCE($2, description),
+             level = COALESCE($3, level),
+             assignee_id = COALESCE($4, assignee_id),
+             due_at = COALESCE($5, due_at),
+             status_history = $6,
+             updated_at = $7
+         WHERE id = $1
+         RETURNING id, hazard_no, description, level, assignee_id, due_at, status, updated_at`,
+        [
+          id,
+          body.description ?? null,
+          body.level ?? null,
+          body.assignee_id ?? null,
+          body.due_at ?? null,
+          JSON.stringify([
+            ...history,
+            {
+              status: hazard.status,
+              at: atCst,
+              operator_id: body.operator_id,
+              note: body.note ?? null,
+              client_uuid: body.client_uuid,
+              action: "edit",
+              changes,
+            },
+          ]),
+          at,
+        ],
+      );
+      const row = updated[0];
+      return {
+        id: row.id,
+        hazard_no: row.hazard_no,
+        description: row.description,
+        level: row.level,
+        assignee_id: row.assignee_id,
+        due_at: toCst(row.due_at),
+        status: row.status,
+        updated_at: toCst(row.updated_at),
+      };
+    });
+    return okJson(c, data);
+  },
+);
 
 hazards.get("/hazards/:id", async (c) => {
   const id = c.req.param("id");

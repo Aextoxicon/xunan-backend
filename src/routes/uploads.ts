@@ -16,6 +16,46 @@ const presignSchema = z.object({
 
 const uploads = new Hono<AppEnv>();
 
+const objectKeySchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/, "非法对象 key")
+  .refine((key) => !key.includes(".."), "非法对象 key");
+
+function signerFor(storage: NonNullable<ReturnType<typeof storageConfig>>): AwsClient {
+  return new AwsClient({
+    accessKeyId: storage.accessKeyId,
+    secretAccessKey: storage.secretAccessKey,
+    service: "s3",
+    region: storage.region,
+  });
+}
+
+uploads.get("/uploads/presign", async (c) => {
+  const storage = storageConfig(c.env);
+  if (!storage) {
+    throw new ApiError(503, "storage_not_configured");
+  }
+  const parsed = objectKeySchema.safeParse(c.req.query("key") ?? "");
+  if (!parsed.success) {
+    throw new ApiError(400, "validation_error", parsed.error.issues);
+  }
+  const objectKey = parsed.data;
+  const target = new URL(`${storage.endpoint.replace(/\/$/, "")}/${storage.bucket}/${objectKey}`);
+  target.searchParams.set("X-Amz-Expires", "300");
+  const signed = await signerFor(storage).sign(target.toString(), {
+    method: "GET",
+    aws: { signQuery: true },
+  });
+  return okJson(c, {
+    object_key: objectKey,
+    download_url: String(signed.url),
+    method: "GET",
+    expires_at: toCst(new Date(Date.now() + 300_000)),
+  });
+});
+
 uploads.post(
   "/uploads/presign",
   zValidator("json", presignSchema, (result) => {
@@ -31,13 +71,7 @@ uploads.post(
     const objectKey = `${crypto.randomUUID()}.${ext}`;
     const target = new URL(`${storage.endpoint.replace(/\/$/, "")}/${storage.bucket}/${objectKey}`);
     target.searchParams.set("X-Amz-Expires", "300");
-    const signer = new AwsClient({
-      accessKeyId: storage.accessKeyId,
-      secretAccessKey: storage.secretAccessKey,
-      service: "s3",
-      region: storage.region,
-    });
-    const signed = await signer.sign(target.toString(), {
+    const signed = await signerFor(storage).sign(target.toString(), {
       method: "PUT",
       headers: { "Content-Type": body.content_type },
       aws: { signQuery: true },

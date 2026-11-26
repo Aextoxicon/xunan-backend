@@ -1,4 +1,4 @@
--- Prisma 不支持 CHECK 约束
+-- Prisma不支持CHECK约束
 -- 执行npm run db:constraints
 
 ALTER TABLE "users" DROP CONSTRAINT IF EXISTS "users_role_check";

@@ -1,4 +1,5 @@
 import type { Client } from "pg";
+import type { AuthUser } from "./auth.js";
 
 export type Bindings = {
   HYPERDRIVE?: { connectionString: string };
@@ -9,9 +10,11 @@ export type Bindings = {
   AWS_SECRET_ACCESS_KEY?: string;
   AWS_REGION?: string;
   CORS_ORIGINS?: string;
+  JWT_SECRET?: string;
+  JWT_TTL_DAYS?: string;
 };
 
-export type Variables = { db: Client };
+export type Variables = { db: Client; user?: AuthUser };
 
 export type AppEnv = { Bindings: Bindings; Variables: Variables };
 
@@ -35,4 +38,9 @@ export function allowedOrigins(raw: string | undefined): string[] {
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
+}
+
+export function jwtTtlDays(raw: string | undefined): number {
+  const days = Number(raw ?? "30");
+  return Number.isFinite(days) && days > 0 ? days : 30;
 }

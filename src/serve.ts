@@ -12,6 +12,8 @@ const bindings = {
   AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
   AWS_REGION: process.env.AWS_REGION,
   CORS_ORIGINS: process.env.CORS_ORIGINS,
+  JWT_SECRET: process.env.JWT_SECRET,
+  JWT_TTL_DAYS: process.env.JWT_TTL_DAYS,
 };
 
 serve({ fetch: (request) => app.fetch(request, bindings), port }, (info) => {

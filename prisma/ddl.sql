@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS "users" (
     "id" BIGSERIAL NOT NULL,
     "name" TEXT NOT NULL,
     "role" TEXT NOT NULL,
+    "password_hash" TEXT,
     "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "users_pkey" PRIMARY KEY ("id")
