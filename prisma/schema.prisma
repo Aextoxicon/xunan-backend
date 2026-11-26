@@ -1,0 +1,102 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              BigInt      @id @default(autoincrement()) @map("id")
+  name            String      @map("name")
+  role            String      @map("role")
+  createdAt       DateTime    @default(now()) @map("created_at")
+
+  inspections     Inspection[] @relation("Inspector")
+  assignedHazards Hazard[]     @relation("AssignedHazards")
+  createdHazards  Hazard[]     @relation("CreatedHazards")
+
+  @@map("users")
+}
+
+model Room {
+  id          BigInt       @id @default(autoincrement()) @map("id")
+  code        String       @unique @map("code")
+  name        String       @map("name")
+  location    String?      @map("location")
+  active      Boolean      @default(true) @map("active")
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  inspections Inspection[] @relation("RoomInspections")
+  hazards     Hazard[]     @relation("RoomHazards")
+
+  @@map("rooms")
+}
+
+model Inspection {
+  id              BigInt            @id @default(autoincrement()) @map("id")
+  clientUuid      String            @unique @map("client_uuid")
+  recordNo        String            @unique @map("record_no")
+  roomId          BigInt            @map("room_id")
+  inspectorId     BigInt            @map("inspector_id")
+  inspectedAt     DateTime          @map("inspected_at")
+  latitude        Decimal?          @db.Decimal(9, 6) @map("latitude")
+  longitude       Decimal?          @db.Decimal(9, 6) @map("longitude")
+  score           Decimal?          @db.Decimal(5, 1) @map("score")
+  createdAt       DateTime          @default(now()) @map("created_at")
+
+  room            Room              @relation("RoomInspections", fields: [roomId], references: [id])
+  inspector       User              @relation("Inspector", fields: [inspectorId], references: [id])
+  items           InspectionItem[]
+  hazards         Hazard[]          @relation("InspectionHazards")
+
+  @@map("inspections")
+}
+
+model InspectionItem {
+  id            BigInt      @id @default(autoincrement()) @map("id")
+  inspectionId  BigInt      @map("inspection_id")
+  category      String      @map("category")
+  itemName      String      @map("item_name")
+  result        String      @map("result")
+  photoKey      String?     @map("photo_key")
+  remark        String?     @map("remark")
+
+  inspection    Inspection  @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  hazards       Hazard[]    @relation("ItemHazards")
+
+  @@index([inspectionId])
+  @@map("inspection_items")
+}
+
+model Hazard {
+  id                BigInt      @id @default(autoincrement()) @map("id")
+  clientUuid        String      @unique @map("client_uuid")
+  hazardNo          String      @unique @map("hazard_no")
+  roomId            BigInt      @map("room_id")
+  inspectionId      BigInt?     @map("inspection_id")
+  inspectionItemId  BigInt?     @map("inspection_item_id")
+  description       String      @map("description")
+  level             String      @map("level")
+  photoKeys         Json        @default("[]") @map("photo_keys")
+  assigneeId        BigInt      @map("assignee_id")
+  dueAt             DateTime    @map("due_at")
+  status            String      @default("待整改") @map("status")
+  closedAt          DateTime?   @map("closed_at")
+  createdBy         BigInt      @map("created_by")
+  statusHistory     Json        @default("[]") @map("status_history")
+  createdAt         DateTime    @default(now()) @map("created_at")
+  updatedAt         DateTime    @updatedAt @map("updated_at")
+
+  room              Room            @relation("RoomHazards", fields: [roomId], references: [id])
+  inspection        Inspection?     @relation("InspectionHazards", fields: [inspectionId], references: [id])
+  inspectionItem    InspectionItem? @relation("ItemHazards", fields: [inspectionItemId], references: [id])
+  assignee          User            @relation("AssignedHazards", fields: [assigneeId], references: [id])
+  createdByUser     User            @relation("CreatedHazards", fields: [createdBy], references: [id])
+
+  @@index([roomId])
+  @@index([status])
+  @@index([dueAt])
+  @@map("hazards")
+}

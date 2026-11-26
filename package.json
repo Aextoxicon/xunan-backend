@@ -8,7 +8,11 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:push": "prisma db push"
   },
   "keywords": [],
   "dependencies": {
@@ -16,6 +20,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1178.0",
     "@hono/node-server": "^2.1.11",
     "@hono/zod-validator": "^0.9.1",
+    "@prisma/client": "^6.19.3",
     "hono": "^4.13.22",
     "pg": "^8.23.1",
     "zod": "^4.6.7"
@@ -24,11 +29,15 @@
     "@types/node": "^26.6.11",
     "@types/pg": "^8.23.1",
     "dotenv": "^18.0.10",
+    "prisma": "^6.19.3",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.1.2"
   },
   "allowScripts": {
-    "esbuild@0.28.2": true
+    "esbuild@0.28.2": true,
+    "prisma@6.19.3": true,
+    "@prisma/engines@6.19.3": true,
+    "@prisma/client@6.19.3": true
   }
 }
