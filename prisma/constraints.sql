@@ -1,7 +1,5 @@
--- 值域与完整性约束
--- Prisma 不支持 CHECK 约束，也不会检测它们，故 schema.prisma 只表达结构
--- 约束由本文件单独执行，幂等可重复运行
--- 执行：npm run db:constraints
+-- Prisma 不支持 CHECK 约束
+-- 执行npm run db:constraints
 
 ALTER TABLE "users" DROP CONSTRAINT IF EXISTS "users_role_check";
 ALTER TABLE "users" ADD CONSTRAINT "users_role_check" CHECK ("role" IN ('inspector', 'admin'));
@@ -30,3 +28,15 @@ ALTER TABLE "hazards" DROP CONSTRAINT IF EXISTS "hazards_description_check";
 ALTER TABLE "hazards" ADD CONSTRAINT "hazards_description_check" CHECK (char_length("description") BETWEEN 1 AND 2000);
 ALTER TABLE "hazards" DROP CONSTRAINT IF EXISTS "hazards_closed_check";
 ALTER TABLE "hazards" ADD CONSTRAINT "hazards_closed_check" CHECK (("status" = '已闭环') = ("closed_at" IS NOT NULL));
+
+ALTER TABLE "rooms" DROP CONSTRAINT IF EXISTS "rooms_radius_check";
+ALTER TABLE "rooms" ADD CONSTRAINT "rooms_radius_check" CHECK ("radius_m" IS NULL OR "radius_m" > 0);
+ALTER TABLE "rooms" DROP CONSTRAINT IF EXISTS "rooms_latitude_check";
+ALTER TABLE "rooms" ADD CONSTRAINT "rooms_latitude_check" CHECK ("latitude" IS NULL OR ("latitude" >= -90 AND "latitude" <= 90));
+ALTER TABLE "rooms" DROP CONSTRAINT IF EXISTS "rooms_longitude_check";
+ALTER TABLE "rooms" ADD CONSTRAINT "rooms_longitude_check" CHECK ("longitude" IS NULL OR ("longitude" >= -180 AND "longitude" <= 180));
+ALTER TABLE "rooms" DROP CONSTRAINT IF EXISTS "rooms_cycle_check";
+ALTER TABLE "rooms" ADD CONSTRAINT "rooms_cycle_check" CHECK ("inspection_cycle_days" BETWEEN 1 AND 365);
+
+ALTER TABLE "hazards" DROP CONSTRAINT IF EXISTS "hazards_remind_count_check";
+ALTER TABLE "hazards" ADD CONSTRAINT "hazards_remind_count_check" CHECK ("remind_count" >= 0);

@@ -1,0 +1,11 @@
+-- 功能补齐迁移：房间定位/巡检周期/检查项配置，隐患催办计数
+-- 可重复执行
+
+ALTER TABLE "rooms" ADD COLUMN IF NOT EXISTS "latitude" DECIMAL(9,6);
+ALTER TABLE "rooms" ADD COLUMN IF NOT EXISTS "longitude" DECIMAL(9,6);
+ALTER TABLE "rooms" ADD COLUMN IF NOT EXISTS "radius_m" INTEGER;
+ALTER TABLE "rooms" ADD COLUMN IF NOT EXISTS "inspection_cycle_days" INTEGER NOT NULL DEFAULT 7;
+ALTER TABLE "rooms" ADD COLUMN IF NOT EXISTS "check_item_codes" TEXT[] DEFAULT ARRAY[]::TEXT[];
+
+ALTER TABLE "hazards" ADD COLUMN IF NOT EXISTS "remind_count" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "hazards" ADD COLUMN IF NOT EXISTS "last_reminded_at" TIMESTAMPTZ(3);
