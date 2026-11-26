@@ -4,7 +4,7 @@ import { HTTPException } from "hono/http-exception";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { serve } from "@hono/node-server";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { Context } from "hono";
@@ -19,10 +19,7 @@ const env = {
   port: Number(process.env.PORT ?? 3000),
 };
 
-const pool = new Pool({
-  connectionString: env.databaseUrl,
-  max: 10,
-});
+const pool = new Pool({ connectionString: env.databaseUrl, max: 10 });
 
 pool.on("error", (err) => {
   console.error("unexpected pg pool error", err);
@@ -40,21 +37,37 @@ const s3 =
       })
     : null;
 
-const idField = z.string().min(8).max(64);
+const clientUuid = z.string().min(8).max(64);
+const positiveId = z.string().regex(/^[1-9]\d*$/);
+const positiveInt = z.number().int().positive();
 const dateField = z.string().datetime();
-const posInt = z.number().int().positive();
 
-const inspectionItemSchema = z.object({
-  check_item_id: posInt,
-  result: z.enum(["normal", "abnormal", "na"]),
-  photo_key: z.string().optional(),
-  remark: z.string().max(500).optional(),
-});
+const checkItems = [
+  { item_code: "elec.socket", category: "用电", item_name: "插座与线路无破损", photo_required_when_abnormal: true },
+  { item_code: "fire.extinguisher", category: "消防", item_name: "灭火器压力正常", photo_required_when_abnormal: true },
+  { item_code: "chemical.cabinet", category: "危化品", item_name: "危化品柜双人双锁", photo_required_when_abnormal: true },
+  { item_code: "equipment.grounding", category: "设备", item_name: "设备接地可靠", photo_required_when_abnormal: true },
+] as const;
+const checkItemByCode = new Map<string, (typeof checkItems)[number]>(
+  checkItems.map((item) => [item.item_code, item] as const),
+);
+
+const inspectionItemSchema = z
+  .object({
+    item_code: z.string().min(1),
+    result: z.enum(["normal", "abnormal", "na"]),
+    photo_keys: z.array(z.string().min(1)).default([]),
+    remark: z.string().max(500).optional(),
+  })
+  .refine((item) => item.result !== "abnormal" || item.photo_keys.length > 0, {
+    path: ["photo_keys"],
+    message: "异常项至少上传一张照片",
+  });
 
 const inspectionSchema = z.object({
-  client_uuid: idField,
-  room_id: posInt,
-  inspector_id: posInt,
+  client_uuid: clientUuid,
+  room_id: positiveId,
+  inspector_id: positiveId,
   inspected_at: dateField,
   location: z
     .object({
@@ -66,28 +79,29 @@ const inspectionSchema = z.object({
 });
 
 const hazardSchema = z.object({
-  client_uuid: idField,
-  room_id: posInt,
-  inspection_id: posInt.optional(),
-  inspection_item_id: posInt.optional(),
+  client_uuid: clientUuid,
+  room_id: positiveId,
+  inspection_id: positiveId.optional(),
+  inspection_item_id: positiveId.optional(),
   description: z.string().min(1).max(2000),
   level: z.enum(["一般", "较大", "重大"]),
-  photo_keys: z.array(z.string()).default([]),
-  assignee_id: posInt,
+  photo_keys: z.array(z.string().min(1)).min(1),
+  assignee_id: positiveId,
+  created_by: positiveId,
   due_at: dateField,
 });
 
 const statusSchema = z.object({
-  client_uuid: idField,
+  client_uuid: clientUuid,
   status: z.enum(["待整改", "整改中", "待验收", "已闭环"]),
-  operator_id: posInt,
+  operator_id: positiveId,
   note: z.string().max(500).optional(),
 });
 
 const presignSchema = z.object({
   file_name: z.string().min(1),
-  content_type: z.string().min(1),
-  file_size: posInt,
+  content_type: z.enum(["image/jpeg", "image/png", "image/webp"]),
+  file_size: positiveInt.max(10 * 1024 * 1024),
 });
 
 const allowedTransitions: Record<string, string[]> = {
@@ -97,21 +111,65 @@ const allowedTransitions: Record<string, string[]> = {
   已闭环: [],
 };
 
-const defaultCheckItems = [
-  { category: "用电", item_name: "插座与线路无破损", result: "normal" },
-  { category: "消防", item_name: "灭火器压力正常", result: "normal" },
-  { category: "危化品", item_name: "危化品柜双人双锁", result: "normal" },
-  { category: "设备", item_name: "设备接地可靠", result: "normal" },
-];
+type StatusHistoryEntry = {
+  status: string;
+  at: string;
+  operator_id?: string;
+  note?: string | null;
+  client_uuid?: string;
+};
 
-function recordNo(prefix: string): string {
-  const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  const tail = Date.now().toString().slice(-6);
-  return `${prefix}-${day}-${tail}`;
+const errorMessages: Record<string, string> = {
+  validation_error: "参数校验失败",
+  invalid_id: "ID 必须为正整数字符串",
+  not_found: "资源不存在",
+  invalid_status_transition: "状态流转不允许",
+  idempotency_key_conflict: "同一 client_uuid 不能用于不同的目标状态",
+  foreign_key_violation: "引用的资源不存在",
+  internal_error: "服务内部错误",
+  r2_not_configured: "R2 未配置",
+};
+
+async function withTransaction<T>(run: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await run(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === "object" && err !== null && "code" in err && (err as { code?: string }).code === "23505";
+async function recordNo(
+  client: PoolClient,
+  table: "inspections" | "hazards",
+  field: "record_no" | "hazard_no",
+  prefix: "XJ" | "HZ",
+): Promise<string> {
+  const day = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  })
+    .format(new Date())
+    .replaceAll("-", "");
+  await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`${prefix}:${day}`]);
+  const { rows } = await client.query(
+    `SELECT COALESCE(MAX(RIGHT(${field}, 4))::int, 0) + 1 AS seq
+     FROM ${table} WHERE ${field} LIKE $1`,
+    [`${prefix}-${day}-%`],
+  );
+  return `${prefix}-${day}-${String(rows[0].seq).padStart(4, "0")}`;
+}
+
+function isPgError(err: unknown, code: string): boolean {
+  return typeof err === "object" && err !== null && "code" in err && err.code === code;
 }
 
 class ApiError extends Error {
@@ -126,7 +184,17 @@ function okJson<T>(c: Context, data: T, status: ContentfulStatusCode = 200) {
 }
 
 function failJson(c: Context, status: ContentfulStatusCode, code: string, issues?: unknown) {
-  return c.json({ ok: false, error: { code, ...(issues ? { issues } : {}) } } as const, status);
+  return c.json(
+    {
+      ok: false,
+      error: {
+        code,
+        message: errorMessages[code] ?? code,
+        ...(issues ? { issues } : {}),
+      },
+    } as const,
+    status,
+  );
 }
 
 const app = new Hono();
@@ -139,6 +207,9 @@ app.onError((err, c) => {
   if (err instanceof HTTPException) {
     return failJson(c, err.status as ContentfulStatusCode, err.message);
   }
+  if (isPgError(err, "23503")) {
+    return failJson(c, 422, "foreign_key_violation");
+  }
   console.error(err);
   return failJson(c, 500, "internal_error");
 });
@@ -147,128 +218,214 @@ app.get("/health", (c) => okJson(c, { status: "ok", time: new Date().toISOString
 
 api.post(
   "/inspections",
-  zValidator("json", inspectionSchema, (result, _c) => {
+  zValidator("json", inspectionSchema, (result) => {
     if (!result.success) throw new ApiError(400, "validation_error", result.error.issues);
   }),
   async (c) => {
     const body = c.req.valid("json");
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
+    const configs = body.items.map((item, index) => {
+      const config = checkItemByCode.get(item.item_code);
+      if (!config) {
+        throw new ApiError(400, "validation_error", [
+          { path: ["items", index, "item_code"], message: "检查项不存在" },
+        ]);
+      }
+      return config;
+    });
+    const applicableCount = body.items.filter((item) => item.result !== "na").length;
+    const normalCount = body.items.filter((item) => item.result === "normal").length;
+    const score = applicableCount ? (normalCount / applicableCount) * 100 : null;
+
+    const result = await withTransaction(async (client) => {
       const { rows } = await client.query(
         `INSERT INTO inspections
-          (client_uuid, record_no, room_id, inspector_id, inspected_at, latitude, longitude)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id, record_no, created_at`,
+          (client_uuid, record_no, room_id, inspector_id, inspected_at, latitude, longitude, score)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (client_uuid) DO NOTHING
+         RETURNING id, record_no, score, created_at`,
         [
           body.client_uuid,
-          recordNo("XJ"),
+          await recordNo(client, "inspections", "record_no", "XJ"),
           body.room_id,
           body.inspector_id,
           body.inspected_at,
           body.location?.latitude ?? null,
           body.location?.longitude ?? null,
+          score,
         ],
       );
-      const inspection = rows[0];
-      for (const item of body.items) {
-        await client.query(
-          `INSERT INTO inspection_items
-            (inspection_id, category, item_name, result, photo_key, remark)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [inspection.id, "", item.check_item_id.toString(), item.result, item.photo_key ?? null, item.remark ?? null],
+      let inspection = rows[0];
+      let duplicated = false;
+      if (!inspection) {
+        const { rows: existing } = await client.query(
+          `SELECT id, record_no, score, created_at FROM inspections WHERE client_uuid = $1`,
+          [body.client_uuid],
         );
+        inspection = existing[0];
+        duplicated = true;
+      } else {
+        for (const [index, item] of body.items.entries()) {
+          const config = configs[index];
+          await client.query(
+            `INSERT INTO inspection_items
+              (inspection_id, item_code, category, item_name, result, photo_keys, remark)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              inspection.id,
+              item.item_code,
+              config.category,
+              config.item_name,
+              item.result,
+              item.photo_keys,
+              item.remark ?? null,
+            ],
+          );
+        }
       }
-      await client.query("COMMIT");
-      return okJson(c, { id: inspection.id, record_no: inspection.record_no, created_at: inspection.created_at }, 201);
-    } catch (err) {
-      await client.query("ROLLBACK");
-      if (isUniqueViolation(err)) {
-        return failJson(c, 409, "duplicate_client_uuid");
-      }
-      throw err;
-    } finally {
-      client.release();
-    }
+      const data = {
+        id: inspection.id,
+        record_no: inspection.record_no,
+        score: inspection.score === null ? null : Number(inspection.score),
+        created_at: inspection.created_at,
+      };
+      return { data: duplicated ? { ...data, duplicated: true } : data, status: duplicated ? (200 as const) : (201 as const) };
+    });
+    return okJson(c, result.data, result.status);
   },
 );
 
 api.post(
   "/hazards",
-  zValidator("json", hazardSchema, (result, _c) => {
+  zValidator("json", hazardSchema, (result) => {
     if (!result.success) throw new ApiError(400, "validation_error", result.error.issues);
   }),
   async (c) => {
     const body = c.req.valid("json");
-    const now = new Date().toISOString();
-    const { rows } = await pool.query(
-      `INSERT INTO hazards
-        (client_uuid, hazard_no, room_id, inspection_id, inspection_item_id,
-         description, level, photo_keys, assignee_id, due_at, status, status_history, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-       RETURNING id, hazard_no, status, created_at`,
-      [
-        body.client_uuid,
-        recordNo("HZ"),
-        body.room_id,
-        body.inspection_id ?? null,
-        body.inspection_item_id ?? null,
-        body.description,
-        body.level,
-        JSON.stringify(body.photo_keys),
-        body.assignee_id,
-        body.due_at,
-        "待整改",
-        JSON.stringify([{ status: "待整改", at: now }]),
-        body.assignee_id,
-      ],
-    );
-    const hazard = rows[0];
-    return okJson(
-      c,
-      { id: hazard.id, hazard_no: hazard.hazard_no, status: hazard.status, created_at: hazard.created_at },
-      201,
-    );
+    const result = await withTransaction(async (client) => {
+      if (body.inspection_item_id) {
+        const { rows } = await client.query(
+          `SELECT inspection_id FROM inspection_items WHERE id = $1`,
+          [body.inspection_item_id],
+        );
+        if (!rows[0] || rows[0].inspection_id !== body.inspection_id) {
+          throw new ApiError(422, "foreign_key_violation");
+        }
+      }
+      const now = new Date().toISOString();
+      const { rows } = await client.query(
+        `INSERT INTO hazards
+          (client_uuid, hazard_no, room_id, inspection_id, inspection_item_id,
+           description, level, photo_keys, assignee_id, created_by, due_at,
+           status, status_history)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         ON CONFLICT (client_uuid) DO NOTHING
+         RETURNING id, hazard_no, status, created_at`,
+        [
+          body.client_uuid,
+          await recordNo(client, "hazards", "hazard_no", "HZ"),
+          body.room_id,
+          body.inspection_id ?? null,
+          body.inspection_item_id ?? null,
+          body.description,
+          body.level,
+          body.photo_keys,
+          body.assignee_id,
+          body.created_by,
+          body.due_at,
+          "待整改",
+          JSON.stringify([{ status: "待整改", at: now, operator_id: body.created_by, note: null }]),
+        ],
+      );
+      let hazard = rows[0];
+      let duplicated = false;
+      if (!hazard) {
+        const { rows: existing } = await client.query(
+          `SELECT id, hazard_no, status, created_at FROM hazards WHERE client_uuid = $1`,
+          [body.client_uuid],
+        );
+        hazard = existing[0];
+        duplicated = true;
+      }
+      const data = {
+        id: hazard.id,
+        hazard_no: hazard.hazard_no,
+        status: hazard.status,
+        created_at: hazard.created_at,
+      };
+      return { data: duplicated ? { ...data, duplicated: true } : data, status: duplicated ? (200 as const) : (201 as const) };
+    });
+    return okJson(c, result.data, result.status);
   },
 );
 
 api.patch(
   "/hazards/:id/status",
-  zValidator("json", statusSchema, (result, _c) => {
+  zValidator("json", statusSchema, (result) => {
     if (!result.success) throw new ApiError(400, "validation_error", result.error.issues);
   }),
   async (c) => {
-    const id = Number(c.req.param("id"));
-    const body = c.req.valid("json");
-    if (!Number.isInteger(id) || id <= 0) {
+    const id = c.req.param("id");
+    if (!positiveId.safeParse(id).success) {
       throw new ApiError(400, "invalid_id");
     }
-    const { rows } = await pool.query(
-      `SELECT id, status, status_history, client_uuid FROM hazards WHERE id = $1`,
-      [id],
-    );
-    const hazard = rows[0];
-    if (!hazard) {
-      throw new ApiError(404, "not_found");
-    }
-    const allowed = allowedTransitions[hazard.status as string] ?? [];
-    if (!allowed.includes(body.status)) {
-      throw new ApiError(409, "invalid_status_transition");
-    }
-    const now = new Date().toISOString();
-    const history = Array.isArray(hazard.status_history) ? hazard.status_history : [];
-    const nextHistory = [
-      ...history,
-      { status: body.status, at: now, operator_id: body.operator_id, note: body.note ?? null },
-    ];
-    const { rows: updated } = await pool.query(
-      `UPDATE hazards
-        SET status = $1, closed_at = $2, status_history = $3, updated_at = now()
-        WHERE id = $4
-        RETURNING id, hazard_no, status, due_at, closed_at, updated_at`,
-      [body.status, body.status === "已闭环" ? now : null, JSON.stringify(nextHistory), id],
-    );
-    return okJson(c, updated[0]);
+    const body = c.req.valid("json");
+    const data = await withTransaction(async (client) => {
+      const { rows } = await client.query(
+        `SELECT id, hazard_no, status, due_at, closed_at, updated_at, status_history
+         FROM hazards WHERE id = $1 FOR UPDATE`,
+        [id],
+      );
+      const hazard = rows[0];
+      if (!hazard) {
+        throw new ApiError(404, "not_found");
+      }
+      const history: StatusHistoryEntry[] = Array.isArray(hazard.status_history)
+        ? (hazard.status_history as StatusHistoryEntry[])
+        : [];
+      const replay = history.find((entry) => entry?.client_uuid === body.client_uuid);
+      if (replay && replay.status !== body.status) {
+        throw new ApiError(409, "idempotency_key_conflict");
+      }
+      const duplicated = replay !== undefined;
+      const current = {
+        id: hazard.id,
+        hazard_no: hazard.hazard_no,
+        status: hazard.status,
+        due_at: hazard.due_at,
+        closed_at: hazard.closed_at,
+        updated_at: hazard.updated_at,
+      };
+      if (duplicated || hazard.status === body.status) {
+        return duplicated ? { ...current, duplicated: true } : current;
+      }
+      if (!(allowedTransitions[hazard.status as string] ?? []).includes(body.status)) {
+        throw new ApiError(409, "invalid_status_transition");
+      }
+      const now = new Date().toISOString();
+      const { rows: updated } = await client.query(
+        `UPDATE hazards
+         SET status = $1, closed_at = $2, status_history = $3, updated_at = now()
+         WHERE id = $4
+         RETURNING id, hazard_no, status, due_at, closed_at, updated_at`,
+        [
+          body.status,
+          body.status === "已闭环" ? now : null,
+          JSON.stringify([
+            ...history,
+            {
+              status: body.status,
+              at: now,
+              operator_id: body.operator_id,
+              note: body.note ?? null,
+              client_uuid: body.client_uuid,
+            },
+          ]),
+          id,
+        ],
+      );
+      return updated[0];
+    });
+    return okJson(c, data);
   },
 );
 
@@ -283,25 +440,46 @@ api.get("/stats/overview", async (c) => {
   );
   const summary = rows[0];
   const { rows: roomRanking } = await pool.query(
-    `SELECT r.name, COUNT(h.id)::int AS hazard_count
+    `SELECT r.id AS room_id, r.name, COUNT(h.id)::int AS hazard_count
      FROM rooms r
      LEFT JOIN hazards h ON h.room_id = r.id
      GROUP BY r.id, r.name
-     ORDER BY hazard_count DESC`,
+     ORDER BY hazard_count DESC, r.id`,
   );
   const { rows: trend } = await pool.query(
-    `SELECT date_trunc('day', created_at)::date AS day, COUNT(*)::int AS created
-     FROM hazards
-     WHERE created_at >= now() - interval '7 days'
-     GROUP BY day
-     ORDER BY day`,
+    `WITH days AS (
+       SELECT generate_series(
+         date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') - interval '6 days',
+         date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai'),
+         interval '1 day'
+       ) AS day
+     )
+     SELECT to_char(days.day, 'YYYY-MM-DD') AS day,
+       COUNT(h.id) FILTER (
+         WHERE h.created_at AT TIME ZONE 'Asia/Shanghai' >= days.day
+           AND h.created_at AT TIME ZONE 'Asia/Shanghai' < days.day + interval '1 day'
+       )::int AS created,
+       COUNT(h.id) FILTER (
+         WHERE h.closed_at AT TIME ZONE 'Asia/Shanghai' >= days.day
+           AND h.closed_at AT TIME ZONE 'Asia/Shanghai' < days.day + interval '1 day'
+       )::int AS closed
+     FROM days
+     LEFT JOIN hazards h ON
+       (h.created_at AT TIME ZONE 'Asia/Shanghai' >= days.day
+        AND h.created_at AT TIME ZONE 'Asia/Shanghai' < days.day + interval '1 day')
+       OR (h.closed_at AT TIME ZONE 'Asia/Shanghai' >= days.day
+           AND h.closed_at AT TIME ZONE 'Asia/Shanghai' < days.day + interval '1 day')
+     GROUP BY days.day
+     ORDER BY days.day`,
   );
   return okJson(c, {
     pending_count: summary.pending_count,
     overdue_count: summary.overdue_count,
     closed_count: summary.closed_count,
     total_count: summary.total_count,
-    closure_rate: summary.total_count ? summary.closed_count / summary.total_count : 0,
+    closure_rate: summary.total_count
+      ? Math.round((summary.closed_count / summary.total_count) * 10000) / 10000
+      : 0,
     room_ranking: roomRanking,
     trend,
   });
@@ -314,15 +492,19 @@ api.get("/rooms", async (c) => {
 
 api.get("/check-items", async (c) => {
   const roomId = c.req.query("room_id");
-  if (!roomId) {
-    throw new ApiError(400, "missing_room_id");
+  if (!positiveId.safeParse(roomId ?? "").success) {
+    throw new ApiError(400, "validation_error");
   }
-  return okJson(c, { room_id: Number(roomId), sample: true, items: defaultCheckItems });
+  const { rows } = await pool.query(`SELECT id FROM rooms WHERE id = $1`, [roomId]);
+  if (!rows[0]) {
+    throw new ApiError(404, "not_found");
+  }
+  return okJson(c, { room_id: roomId, items: checkItems });
 });
 
 api.post(
   "/uploads/presign",
-  zValidator("json", presignSchema, (result, _c) => {
+  zValidator("json", presignSchema, (result) => {
     if (!result.success) throw new ApiError(400, "validation_error", result.error.issues);
   }),
   async (c) => {

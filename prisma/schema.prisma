@@ -1,3 +1,7 @@
+// schema 是数据库结构的唯一真源，建表与改结构用 prisma db push
+// 值域与完整性 CHECK 约束 Prisma 不支持也不检测，由 prisma/constraints.sql 单独执行
+// 建表或改结构后执行：npm run db:setup
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -51,16 +55,19 @@ model Inspection {
   items           InspectionItem[]
   hazards         Hazard[]          @relation("InspectionHazards")
 
+  @@index([roomId])
+  @@index([inspectedAt])
   @@map("inspections")
 }
 
 model InspectionItem {
   id            BigInt      @id @default(autoincrement()) @map("id")
   inspectionId  BigInt      @map("inspection_id")
+  itemCode      String      @map("item_code")
   category      String      @map("category")
   itemName      String      @map("item_name")
   result        String      @map("result")
-  photoKey      String?     @map("photo_key")
+  photoKeys     String[]    @default([]) @map("photo_keys")
   remark        String?     @map("remark")
 
   inspection    Inspection  @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
@@ -79,7 +86,7 @@ model Hazard {
   inspectionItemId  BigInt?     @map("inspection_item_id")
   description       String      @map("description")
   level             String      @map("level")
-  photoKeys         Json        @default("[]") @map("photo_keys")
+  photoKeys         String[]    @default([]) @map("photo_keys")
   assigneeId        BigInt      @map("assignee_id")
   dueAt             DateTime    @map("due_at")
   status            String      @default("待整改") @map("status")
@@ -87,7 +94,7 @@ model Hazard {
   createdBy         BigInt      @map("created_by")
   statusHistory     Json        @default("[]") @map("status_history")
   createdAt         DateTime    @default(now()) @map("created_at")
-  updatedAt         DateTime    @updatedAt @map("updated_at")
+  updatedAt         DateTime    @default(now()) @updatedAt @map("updated_at")
 
   room              Room            @relation("RoomHazards", fields: [roomId], references: [id])
   inspection        Inspection?     @relation("InspectionHazards", fields: [inspectionId], references: [id])
@@ -96,6 +103,8 @@ model Hazard {
   createdByUser     User            @relation("CreatedHazards", fields: [createdBy], references: [id])
 
   @@index([roomId])
+  @@index([inspectionId])
+  @@index([assigneeId])
   @@index([status])
   @@index([dueAt])
   @@map("hazards")
