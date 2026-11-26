@@ -26,7 +26,6 @@
     "@hono/zod-validator": "^0.9.1",
     "@neon/config": "^1.14.8",
     "@neon/env": "^2.1.11",
-    "@prisma/client": "^6.19.3",
     "aws4fetch": "^1.0.20",
     "files-sdk": "^3.2.1",
     "hono": "^4.13.22",

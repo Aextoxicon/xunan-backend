@@ -85,6 +85,9 @@ CREATE TABLE IF NOT EXISTS "hazards" (
 );
 
 -- CreateIndex
+CREATE UNIQUE INDEX IF NOT EXISTS "users_name_key" ON "users"("name");
+
+-- CreateIndex
 CREATE UNIQUE INDEX IF NOT EXISTS "rooms_code_key" ON "rooms"("code");
 
 -- CreateIndex

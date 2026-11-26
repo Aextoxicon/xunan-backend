@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
+import { resolveActorId } from "../lib/auth.js";
 import { withTransaction, recordNo } from "../lib/db.js";
 import { ApiError, okJson } from "../lib/http.js";
 import { toCst } from "../lib/time.js";
@@ -28,14 +29,14 @@ const inlineHazardSchema = z.object({
   level: levelField,
   photo_keys: z.array(z.string().min(1)).min(1),
   assignee_id: positiveId,
-  created_by: positiveId,
+  created_by: positiveId.optional(),
   due_at: dateField,
 });
 
 const inspectionSchema = z.object({
   client_uuid: clientUuid,
   room_id: positiveId,
-  inspector_id: positiveId,
+  inspector_id: positiveId.optional(),
   inspected_at: dateField,
   location: z
     .object({
@@ -65,6 +66,7 @@ inspections.post(
   }),
   async (c) => {
     const body = c.req.valid("json");
+    const inspectorId = resolveActorId(c, body.inspector_id);
     const result = await withTransaction(c, async (client) => {
       const room = await fetchRoom(client, body.room_id);
       if (!room) {
@@ -121,7 +123,7 @@ inspections.post(
           body.client_uuid,
           await recordNo(client, "inspections", "record_no", "XJ"),
           body.room_id,
-          body.inspector_id,
+          inspectorId,
           body.inspected_at,
           body.location?.latitude ?? null,
           body.location?.longitude ?? null,
@@ -158,7 +160,13 @@ inspections.post(
           );
           itemIds.set(item.item_code, inserted[0].id);
         }
-        for (const hazard of inlineHazards) {
+        for (const [index, hazard] of inlineHazards.entries()) {
+          if (hazard.item_code && !itemIds.has(hazard.item_code)) {
+            throw new ApiError(400, "validation_error", [
+              { path: ["hazards", index, "item_code"], message: "隐患引用的检查项不在本次巡检中" },
+            ]);
+          }
+          const createdBy = resolveActorId(c, hazard.created_by);
           const { rows: clock } = await client.query(`SELECT now() AS at`);
           const now = toCst(clock[0].at as Date);
           await client.query(
@@ -177,11 +185,11 @@ inspections.post(
               hazard.level,
               hazard.photo_keys,
               hazard.assignee_id,
-              hazard.created_by,
+              createdBy,
               hazard.due_at,
               "待整改",
               JSON.stringify([
-                { status: "待整改", at: now, operator_id: hazard.created_by, note: null },
+                { status: "待整改", at: now, operator_id: createdBy, note: null },
               ]),
             ],
           );

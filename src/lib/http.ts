@@ -4,6 +4,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 const errorMessages: Record<string, string> = {
   validation_error: "参数校验失败",
   unauthorized: "未提供或无效的访问令牌",
+  forbidden: "无权执行此操作",
   token_expired: "访问令牌已过期，请重新登录",
   invalid_credentials: "账号或密码不正确",
   auth_not_configured: "服务端未配置 JWT 密钥",

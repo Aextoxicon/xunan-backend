@@ -42,6 +42,17 @@ uploads.get("/uploads/presign", async (c) => {
     throw new ApiError(400, "validation_error", parsed.error.issues);
   }
   const objectKey = parsed.data;
+  const { rows } = await c.var.db.query(
+    `SELECT EXISTS (
+       SELECT 1 FROM inspection_items WHERE $1 = ANY(photo_keys)
+       UNION ALL
+       SELECT 1 FROM hazards WHERE $1 = ANY(photo_keys)
+     ) AS registered`,
+    [objectKey],
+  );
+  if (!rows[0].registered) {
+    throw new ApiError(404, "not_found");
+  }
   const target = new URL(`${storage.endpoint.replace(/\/$/, "")}/${storage.bucket}/${objectKey}`);
   target.searchParams.set("X-Amz-Expires", "300");
   const signed = await signerFor(storage).sign(target.toString(), {

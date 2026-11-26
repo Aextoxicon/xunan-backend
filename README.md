@@ -45,6 +45,7 @@ wrangler.jsonc               Workers 部署配置（入口、nodejs_compat、Hyp
 | `CORS_ORIGINS` | 允许的跨域来源，逗号分隔，如 `http://localhost:5173,https://app.example.com`；填 `*` 放行全部；留空则不下发 CORS 头 |
 | `JWT_SECRET` | 登录 token 的 HMAC 签名密钥，缺失时鉴权接口返回 503 `auth_not_configured` |
 | `JWT_TTL_DAYS` | token 有效期天数，默认 30；离线补传建议保持长有效期 |
+| `ALLOW_DEMO_SEED` | 设为 `true` 才允许执行会清表的 `db:seed`，生产环境禁止 |
 | `PORT` | 本地 `serve()` 的监听端口，默认 3000；Workers 没有监听端口，不需要 |
 
 ## 运行
@@ -86,15 +87,17 @@ Prisma 不支持 CHECK 约束，也不会检测它们，因此结构与约束分
 
 ```bash
 npm run db:setup        # 建表 + 执行约束（走 prisma/ddl.sql 与 pg 驱动，不依赖 Prisma 引擎联网）
-npm run db:seed         # 演示种子数据：12 个实训室、3 个用户、8 次巡检、10 条隐患（含 3 条逾期、2 条带催办），会先清空表
+ALLOW_DEMO_SEED=true npm run db:seed  # 仅演示环境：12 个实训室、3 个用户、8 次巡检、10 条隐患，会先清空表
 npm run db:push         # 用 Prisma 引擎推结构（能直连数据库时用）
 npm run db:constraints  # 只执行 prisma/constraints.sql（幂等，可重复跑）
-# 旧库升级：psql 或以 pg 执行 prisma/migrate-features.sql 与 prisma/migrate-timestamptz.sql
+# 旧库升级：依次执行 prisma/migrate-jwt-auth.sql、migrate-users-name-unique.sql、migrate-features.sql、migrate-timestamptz.sql
 ```
 
 `prisma/ddl.sql` 是建表 DDL，由 `prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script` 离线生成，改了 `schema.prisma` 后重新生成并保留 `IF NOT EXISTS`。
 
 改了 `schema.prisma` 后必须重跑 `db:constraints`，否则新列上的值域与完整性约束缺失。
+
+旧库升级手动执行以下脚本：`migrate-jwt-auth.sql` → `migrate-users-name-unique.sql` → `migrate-features.sql` → `migrate-timestamptz.sql`。执行唯一约束迁移前需先清理重名用户。
 
 旧库若时间列仍是 `timestamp without time zone`，执行一次 `prisma/migrate-timestamptz.sql`（幂等），把 `created_at`/`updated_at`/`inspected_at`/`due_at`/`closed_at` 改成 `timestamptz`。
 

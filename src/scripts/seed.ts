@@ -2,6 +2,10 @@ import "dotenv/config";
 import { Pool } from "pg";
 import { hashPassword } from "../lib/password.js";
 
+if (process.env.ALLOW_DEMO_SEED !== "true" || process.env.NODE_ENV === "production") {
+  throw new Error("db:seed 仅允许在演示环境执行，请设置 ALLOW_DEMO_SEED=true");
+}
+
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 const demoPassword = "xunan2026";

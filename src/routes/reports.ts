@@ -40,6 +40,7 @@ reports.get("/reports/weekly", async (c) => {
        COUNT(*) FILTER (WHERE level = '重大')::int AS major,
        COUNT(*) FILTER (WHERE level = '较大')::int AS medium,
        COUNT(*) FILTER (WHERE level = '一般')::int AS minor,
+       COUNT(*) FILTER (WHERE status = '已闭环')::int AS closed,
        COUNT(*) FILTER (WHERE status <> '已闭环' AND due_at < now())::int AS overdue
      FROM hazards WHERE created_at >= $1 AND created_at < $2`,
     range,
@@ -47,9 +48,6 @@ reports.get("/reports/weekly", async (c) => {
   const { rows: closedRows } = await c.var.db.query(
     `SELECT COUNT(*)::int AS closed FROM hazards WHERE closed_at >= $1 AND closed_at < $2`,
     range,
-  );
-  const { rows: totalRows } = await c.var.db.query(
-    `SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = '已闭环')::int AS closed FROM hazards`,
   );
   const { rows: topRooms } = await c.var.db.query(
     `SELECT h.room_id, r.name, COUNT(*)::int AS hazard_count
@@ -82,7 +80,6 @@ reports.get("/reports/weekly", async (c) => {
     range,
   );
 
-  const totalHazards = totalRows[0].total;
   return okJson(c, {
     range: { start: toCst(start), end: toCst(end) },
     summary: {
@@ -94,7 +91,9 @@ reports.get("/reports/weekly", async (c) => {
       hazard_created: hazardRows[0].created,
       hazard_closed: closedRows[0].closed,
       overdue_now: hazardRows[0].overdue,
-      closure_rate: totalHazards ? Math.round((totalRows[0].closed / totalHazards) * 10000) / 10000 : 0,
+      closure_rate: hazardRows[0].created
+        ? Math.round((hazardRows[0].closed / hazardRows[0].created) * 10000) / 10000
+        : 0,
     },
     by_level: { 重大: hazardRows[0].major, 较大: hazardRows[0].medium, 一般: hazardRows[0].minor },
     by_category: byCategory,

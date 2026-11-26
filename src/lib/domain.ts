@@ -52,5 +52,6 @@ export type StatusHistoryEntry = {
   client_uuid?: string;
   action?: string;
   changes?: Record<string, unknown>;
+  snapshot?: Record<string, unknown>;
   duplicated?: boolean;
 };

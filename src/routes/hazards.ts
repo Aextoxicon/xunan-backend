@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
+import { resolveActorId } from "../lib/auth.js";
 import { recordNo, withTransaction } from "../lib/db.js";
 import { ApiError, okJson } from "../lib/http.js";
 import { toCst } from "../lib/time.js";
@@ -21,21 +22,21 @@ const hazardSchema = z.object({
   level: levelField,
   photo_keys: z.array(z.string().min(1)).min(1),
   assignee_id: positiveId,
-  created_by: positiveId,
+  created_by: positiveId.optional(),
   due_at: dateField,
 });
 
 const statusSchema = z.object({
   client_uuid: clientUuid,
   status: statusField,
-  operator_id: positiveId,
+  operator_id: positiveId.optional(),
   note: z.string().max(500).optional(),
 });
 
 const hazardUpdateSchema = z
   .object({
     client_uuid: clientUuid,
-    operator_id: positiveId,
+    operator_id: positiveId.optional(),
     description: z.string().min(1).max(2000).optional(),
     level: levelField.optional(),
     assignee_id: positiveId.optional(),
@@ -53,7 +54,7 @@ const hazardUpdateSchema = z
 
 const remindSchema = z.object({
   client_uuid: clientUuid,
-  operator_id: positiveId,
+  operator_id: positiveId.optional(),
   note: z.string().max(200).optional(),
 });
 
@@ -77,7 +78,22 @@ hazards.post(
   }),
   async (c) => {
     const body = c.req.valid("json");
+    const createdBy = resolveActorId(c, body.created_by);
     const result = await withTransaction(c, async (client) => {
+      const { rows: existingRows } = await client.query(
+        `SELECT id, hazard_no, status, created_at FROM hazards WHERE client_uuid = $1`,
+        [body.client_uuid],
+      );
+      const existing = existingRows[0];
+      if (existing) {
+        const data = {
+          id: existing.id,
+          hazard_no: existing.hazard_no,
+          status: existing.status,
+          created_at: toCst(existing.created_at),
+        };
+        return { data: { ...data, duplicated: true }, status: 200 as const };
+      }
       if (body.inspection_item_id) {
         const { rows } = await client.query(
           `SELECT inspection_id FROM inspection_items WHERE id = $1`,
@@ -107,10 +123,10 @@ hazards.post(
           body.level,
           body.photo_keys,
           body.assignee_id,
-          body.created_by,
+          createdBy,
           body.due_at,
           "待整改",
-          JSON.stringify([{ status: "待整改", at: now, operator_id: body.created_by, note: null }]),
+          JSON.stringify([{ status: "待整改", at: now, operator_id: createdBy, note: null }]),
         ],
       );
       let hazard = rows[0];
@@ -229,6 +245,7 @@ hazards.patch(
       throw new ApiError(400, "invalid_id");
     }
     const body = c.req.valid("json");
+    const operatorId = resolveActorId(c, body.operator_id);
     const data = await withTransaction(c, async (client) => {
       const { rows } = await client.query(
         `SELECT id, hazard_no, status, description, level, assignee_id, due_at, closed_at,
@@ -265,7 +282,7 @@ hazards.patch(
         if (JSON.stringify(replay.changes ?? {}) !== JSON.stringify(changes)) {
           throw new ApiError(409, "idempotency_key_conflict");
         }
-        return { ...current, duplicated: true };
+        return { ...(replay.snapshot ?? current), duplicated: true };
       }
       if (hazard.status === "已闭环") {
         throw new ApiError(409, "invalid_status_transition");
@@ -273,6 +290,16 @@ hazards.patch(
       const { rows: clock } = await client.query(`SELECT now() AS at`);
       const at = clock[0].at as Date;
       const atCst = toCst(at) as string;
+      const snapshot = {
+        id: hazard.id,
+        hazard_no: hazard.hazard_no,
+        description: body.description ?? hazard.description,
+        level: body.level ?? hazard.level,
+        assignee_id: body.assignee_id ?? hazard.assignee_id,
+        due_at: body.due_at ? toCst(new Date(body.due_at)) : toCst(hazard.due_at),
+        status: hazard.status,
+        updated_at: atCst,
+      };
       const { rows: updated } = await client.query(
         `UPDATE hazards
          SET description = COALESCE($2, description),
@@ -294,11 +321,12 @@ hazards.patch(
             {
               status: hazard.status,
               at: atCst,
-              operator_id: body.operator_id,
+              operator_id: operatorId,
               note: body.note ?? null,
               client_uuid: body.client_uuid,
               action: "edit",
               changes,
+              snapshot,
             },
           ]),
           at,
@@ -365,6 +393,7 @@ hazards.patch(
       throw new ApiError(400, "invalid_id");
     }
     const body = c.req.valid("json");
+    const operatorId = resolveActorId(c, body.operator_id);
     const data = await withTransaction(c, async (client) => {
       const { rows } = await client.query(
         `SELECT id, hazard_no, status, due_at, closed_at, updated_at, status_history
@@ -413,7 +442,7 @@ hazards.patch(
             {
               status: body.status,
               at: atCst,
-              operator_id: body.operator_id,
+              operator_id: operatorId,
               note: body.note ?? null,
               client_uuid: body.client_uuid,
             },
@@ -445,6 +474,7 @@ hazards.post(
       throw new ApiError(400, "invalid_id");
     }
     const body = c.req.valid("json");
+    const operatorId = resolveActorId(c, body.operator_id);
     const data = await withTransaction(c, async (client) => {
       const { rows } = await client.query(
         `SELECT id, hazard_no, status, status_history, remind_count, last_reminded_at, updated_at
@@ -492,7 +522,7 @@ hazards.post(
             {
               status: hazard.status,
               at: atCst,
-              operator_id: body.operator_id,
+              operator_id: operatorId,
               note: body.note ?? null,
               client_uuid: body.client_uuid,
               action: "remind",

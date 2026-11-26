@@ -1,4 +1,4 @@
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { sign, verify } from "hono/jwt";
 import type { AppEnv } from "./env.js";
 import { ApiError } from "./http.js";
@@ -59,4 +59,12 @@ export function authGuard(): MiddlewareHandler<AppEnv> {
     }
     await next();
   };
+}
+
+export function resolveActorId(c: Context<AppEnv>, requested?: string): string {
+  const user = c.var.user!;
+  if (requested && requested !== user.id && user.role !== "admin") {
+    throw new ApiError(403, "forbidden");
+  }
+  return requested ?? user.id;
 }
