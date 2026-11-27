@@ -26,9 +26,9 @@ const rooms = [
 ];
 
 const users = [
-  { name: "李文斌", role: "inspector" },
-  { name: "王思远", role: "admin" },
-  { name: "陈志强", role: "inspector" },
+  { name: "张三", role: "inspector" },
+  { name: "李四", role: "admin" },
+  { name: "王五", role: "inspector" },
 ];
 
 const checkItems = [
