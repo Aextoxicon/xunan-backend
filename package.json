@@ -10,6 +10,7 @@
     "build": "tsc",
     "start": "node dist/serve.js",
     "typecheck": "tsc --noEmit",
+    "jwt:secret": "node -e \"console.log(require('node:crypto').randomBytes(32).toString('base64url'))\"",
     "test": "vitest run",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
@@ -39,7 +40,8 @@
     "prisma": "^6.19.3",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vitest": "^5.1.2"
+    "vitest": "^5.1.2",
+    "wrangler": "^4.162.0"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,

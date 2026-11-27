@@ -2,7 +2,6 @@ import type { Client } from "pg";
 import type { AuthUser } from "./auth.js";
 
 export type Bindings = {
-  HYPERDRIVE?: { connectionString: string };
   DATABASE_URL?: string;
   STORAGE_BUCKET?: string;
   AWS_ENDPOINT_URL_S3?: string;
@@ -19,7 +18,7 @@ export type Variables = { db: Client; user?: AuthUser };
 export type AppEnv = { Bindings: Bindings; Variables: Variables };
 
 export function connectionString(env: Bindings): string | undefined {
-  return env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL;
+  return env.DATABASE_URL;
 }
 
 export function storageConfig(env: Bindings) {

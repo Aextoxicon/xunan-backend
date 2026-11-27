@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { Client } from "pg";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { allowedOrigins, connectionString, type AppEnv } from "./lib/env.js";
+import { allowedOrigins, connectionString, type AppEnv, type Bindings } from "./lib/env.js";
 import { ApiError, failJson, isPgError, okJson } from "./lib/http.js";
 import { toCst } from "./lib/time.js";
 import inspections from "./routes/inspections.js";
@@ -80,4 +80,12 @@ api.route("/", uploads);
 
 app.route("/api/v1", api);
 
-export default app;
+type FetchContext = Parameters<typeof app.fetch>[2];
+
+const worker = {
+  async fetch(request: Request, env: Bindings, ctx?: FetchContext): Promise<Response> {
+    return await app.fetch(request, env, ctx);
+  },
+};
+
+export default worker;

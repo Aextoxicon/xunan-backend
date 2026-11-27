@@ -64,20 +64,20 @@ npm run typecheck   # tsc --noEmit
 入口是 `src/index.ts`，导出 `default app`，配置见 `wrangler.jsonc`：
 
 - `compatibility_flags: ["nodejs_compat"]`：pg 需要 Node 兼容层
-- `hyperdrive` 绑定 `HYPERDRIVE`：运行时取 `env.HYPERDRIVE.connectionString`，没有时回退 `env.DATABASE_URL`
+- 数据库连接串使用 `DATABASE_URL` Secret，Worker 每次请求创建 `pg.Client`
 - `vars` / secret：`STORAGE_BUCKET`、`AWS_*`、`CORS_ORIGINS` 用 `wrangler secret put` 写入
 
 首次部署：
 
 ```bash
 npx wrangler login
-npx wrangler hyperdrive create xunan-db --connection-string="<Neon 直连串>"
-# 把返回的 id 填进 wrangler.jsonc 的 hyperdrive[0].id
+npx wrangler secret put DATABASE_URL
+npx wrangler secret put JWT_SECRET
 npx wrangler secret put AWS_ACCESS_KEY_ID   # 其余 AWS_* 同理
 npm run deploy
 ```
 
-`nodejs_compat` 下每次请求新建 `pg.Client`，连接复用交给 Hyperdrive，不要自己池化。已用 `wrangler deploy --dry-run` 验证打包：约 1.07 MB / gzip 187 KB，在 Workers 免费版 3 MB 限制内。
+`nodejs_compat` 下每次请求新建 `pg.Client`，连接串从 `env.DATABASE_URL` 读取。已用 `wrangler deploy --dry-run` 验证打包：约 1.07 MB / gzip 187 KB，在 Workers 免费版 3 MB 限制内。
 
 本地快速验证仍可用 `npm run dev`（Node 运行时），接口行为一致。
 

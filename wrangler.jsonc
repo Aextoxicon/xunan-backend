@@ -8,12 +8,10 @@
     "enabled": true
   },
   "vars": {
-    "STORAGE_BUCKET": "uploads"
+    "STORAGE_BUCKET": "uploads",
+    "AWS_ENDPOINT_URL_S3": "https://br-falling-king-bilia0g6.storage.c-5.ap-southeast-1.aws.neon.tech",
+    "AWS_REGION": "ap-southeast-1",
+    "JWT_TTL_DAYS": "30",
+    "CORS_ORIGINS": ""
   },
-  "hyperdrive": [
-    {
-      "binding": "HYPERDRIVE",
-      "id": "<hyperdrive-config-id>"
-    }
-  ]
 }
